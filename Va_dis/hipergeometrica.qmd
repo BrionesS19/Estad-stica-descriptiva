@@ -1,0 +1,157 @@
+---
+title: "Distribución Hipergeométrica"
+lang: es
+---
+
+```{=html}
+<style>
+main.content {
+text-align: justify}
+</style>
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(kableExtra)
+library(gridExtra)
+```
+
+La **distribución hipergeométrica** surge en el contexto de la toma de una muestra de un conjunto de objetos de dos tipos.
+
+::: {#def-hipergeometrica}
+La distribución hipergeómetrica se utiliza para determinar la probabilidad de un cierto número de "éxitos" en una serie de extraciones realizadas sin remplazo de una población fija.
+
+La función de masa de probabilidad está dada por:
+
+$$ f(x) = \frac{\binom{K}{x} \binom{N-K}{n-x}}{\binom{N}{n}} \quad \text{para } x = 0, 1, 2, \ldots, n $$ **Parámetros**
+
+-   $N$: tamaño de la población
+-   $K$: número de objetos del tipo 1.
+-   $N-K$: número de objetos del tipo 2.
+-   $n$: tamaño de la muestra
+
+Explicación de la formúla
+
+El término $\binom{K}{x}$ establece las diferentes formas en que $x$ objetos pueden escogerse de la colección de $K$ objetos del tipo 1, mientras 1 que el término $\binom{N-K}{n-x}$ corresponde a las diferentes formas de escoger $n-x$ onjetos de los $N-K$ objetos del tipo 2.
+
+**Parámetros estadísticos**
+
+a)  Esperanza: $$E(X)= \frac{nK}{N}$$
+
+b)  Varianza: $$\text{Var}(X) = n \cdot \frac{K}{N} \cdot \left(1 - \frac{K}{N}\right) \cdot \frac{N - n}{N - 1}$$
+
+**Ejemplo**
+
+```{r}
+#| label: Ejemplo1-hipergeometrica
+# Parámetros
+N <- 20
+K <- 7
+n <- 5
+
+# Valores posibles de X
+x_vals <- 0:min(K, n)
+
+# Calcular probabilidades
+probs <- dhyper(x_vals,K, n = N - K,n)
+
+# Crear tabla
+hipergeometrica_ej1 <- data.frame(
+  x = x_vals,
+  Probabilidad = round(probs, 5)
+)
+
+hipergeometrica_ej1
+
+#Paramétros estadísticos
+esperanza_ej <- n*(K/N)
+varianza_ej <- n*(1-(K/N))*((N-n)/(N-1))
+
+cat("Paramétros estadisticos: \n")
+cat("Esperanza (media): ", esperanza_ej, "\n")
+cat("Varianza: ", varianza_ej, "\n")
+```
+
+**Visualización**
+
+```{r}
+# Gráfico de barras
+ggplot(hipergeometrica_ej1, aes(x = x, y = Probabilidad)) +
+  geom_bar(stat = "identity", fill = "#458b74") +
+   geom_vline(xintercept = esperanza_ej, color = "red", linetype = "dashed", linewidth = 1) +
+  annotate("text", x = esperanza_ej + 1.5, y = max(probs) * 0.8, 
+           label = paste("E[X] =", esperanza_ej), color = "red") +
+  labs(
+    title = "Distribución Hipergeométrica",
+    subtitle = "N = 20, K = 7, n = 5",
+    x = "Número de éxitos en la muestra (X)",
+    y = "Probabilidad"
+  ) +
+  theme_classic()
+```
+
+**Convergencia hipergeométrica-binomial** Sea X una variable aleatoria con distribución hipergeo (N,K,n).Demuestreque la función de probabilidad de X converge puntualmente a la función de probabilidad bin (n,p) cuando N-\> $inf$ y K-\> $inf$ de tal forma que K/N -\> p.
+
+```{r}
+#Elegir unos valores de muestra par la muestra y la probabilidad p
+n <- 10
+p <- 0.3
+
+#Asignar valors para N y K
+Ns <- c(50, 100, 500, 1000, 10000)  # Diferentes tamaños poblacionales
+
+#Distribución binomial
+x_vals <- 0:n
+
+binom_pmf <- dbinom(x_vals, size = n, prob = p)
+
+#Distribución hipergeométrica
+for (N in Ns) {
+  K <- round(N * p)
+  
+  hyper_pmf <- dhyper(x_vals, m = K, n = N - K, k = n)
+}
+
+binom_pmf
+hyper_pmf
+
+```
+
+**Visualización**
+
+```{r}
+plot(x_vals, binom_pmf, type = "h", col = "blue", lwd = 2,
+       ylim = c(0, max(binom_pmf, hyper_pmf)),
+       main = paste("N =", N),
+       xlab = "x", ylab = "Probabilidad")
+  points(x_vals, hyper_pmf, type = "p", col = "red", pch = 19)
+  legend("topright", legend = c("Binomial", "Hipergeométrica"),
+         col = c("blue", "red"), lty = c(1, NA), pch = c(NA, 19))
+```
+
+
+**Ejercicio 1** Se pone a la venta un lote de 100 artículos de los cuales 10 son defectuosos. Un comprador extrae una muestra al azar de 5 artículos y decide que si encuentra 2 o más defectuosos, entonces no compra el lote. Calcule la probabilidad de que la compra se efectúe.
+:::
+```{r}
+N <- 100
+K <- 10
+N_K <- 90
+x <- 2
+n <- 5
+
+#Probabilidad que compre debe hayar menos de 2 defectuosos
+probabilidad_hyper <- dhyper(0,10,90,5) + dhyper(1,10,90,5)
+probabilidad_hyper
+
+#Paramétros estadísticos
+esperanza_ej <- n*(K/N)
+varianza_ej <- n*(1-(K/N))*((N-n)/(N-1))
+
+cat("Paramétros estadisticos: \n")
+cat("Esperanza (media): ", esperanza_ej, "\n")
+cat("Varianza: ", varianza_ej, "\n")
+```
+
