@@ -340,7 +340,7 @@ Una urna contiene 8 bolas numeradas del 1 al 8. Se extrae una bola al azar. Calc
 
 ```{r}
 #| code-fold: true
-#| label: dado-ejemplo
+#| label: urna-discreta
 
 # Parámetros
 x_1 <- 1
@@ -359,7 +359,7 @@ En un juego, se selecciona aleatoriamente un número entero entre 5 y 15 (inclus
 
 ```{r}
 #| code-fold: true
-#| label: ejemplo-numeros
+#| label: numeros-discreta
 
 x2_1 <- 5
 x2_n <- 15
@@ -450,3 +450,4 @@ ggplot(comp_long, aes(x = Valor, y = Probabilidad, fill = Tipo)) +
 
 ```
 :::
+
