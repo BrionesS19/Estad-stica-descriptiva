@@ -774,7 +774,7 @@ cat("Desviación estándar:", desv_std_acertar, "\n")
 Se lanza una moneda 15 veces: - a) ¿Cuál es la probabilidad de obtener exactamente 8 caras? - b) ¿Cuál es la probabilidad de obtener al menos 12 caras? - c) Calcule la media y desviación estándar
 
 ```{r}
-#| label: lanzamiento_moneda
+#| label: lanzamiento_moneda_2
 # Parámetros
 n_lanzamientos <- 15
 p_cara <- 0.5
@@ -805,7 +805,7 @@ cat("Desviación estándar:", desv_std_cara, "\n")
 Un medicamento tiene efectividad del 85%. Se administra a 20 pacientes: - a) ¿Cuál es la probabilidad de que se curen exactamente 18 pacientes? - b) ¿Cuál es la probabilidad de que se curen entre 15 y 19 pacientes? - c) ¿Cuántos pacientes se espera que se curen?
 
 ```{r}
-#| label: aplicacion-medicina
+#| label: aplicacion-medicamento
 # Parámetros
 n_pacientes <- 20
 p_cura <- 0.85
@@ -871,3 +871,4 @@ ggplot(datos_final, aes(x = valor, fill = Tipo)) +
         legend.position = "bottom")
 ```
 ::::::::
+
