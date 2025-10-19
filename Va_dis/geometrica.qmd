@@ -376,7 +376,7 @@ Se lanza una moneda hasta obtener la primera cara.
     c)  Calcule la media y varianza del número de lanzamientos.
     
 ```{r}
-#| label: moneda-geometrica
+#| label: monedas-geometrica
 # Parámetro
 p_cara <- 0.5
 
@@ -452,7 +452,7 @@ Una máquina tiene probabilidad 0.02 de producir una pieza defectuosa.
     c)  Demuestre la propiedad de falta de memoria para este problema.
     
 ```{r}
-#| label: control-calidad-geometrica
+#| label: maquinaria-geometrica
 # Parámetros
 p_defecto_geom <- 0.02
 
@@ -526,3 +526,4 @@ cat("¿Son iguales?", abs(prob_condicional - prob_t) < 1e-10, "\n")
     
 :::
 ::::::::
+
