@@ -1,0 +1,923 @@
+---
+title: "Tarea 5"
+author: "Saraí Briones"
+format: html
+editor: visual
+---
+```{=html}
+<style>
+main.content {
+text-align: justify}
+</style>
+```
+
+```{r}
+#| code-fold: true
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(RColorBrewer)
+library(sf)          # Para datos espaciales
+library(viridis)     # Para paletas de colores
+library(DT)
+library(plotly)
+library(knitr)
+library(kableExtra)
+library(corrplot)
+library(broom)
+library(scales)
+library(multcomp)
+
+
+library(factoextra)
+library(FactoMineR)
+```
+
+# Introducción
+El siguiente análisis de los egresos públicos se hace para comprender como los gobiernos estatales admnistran los recursos públicos. Con el análisis hecho con los datos obtenidos del Estadistico de FInanzas Públicas Estatales y Municipales (EFIPEM) podemos comparar como se distribuye el gasto, cuales son las prioridades y las capacidades presupuestarias.
+
+## Estructura General de los Datos
+
+-   Dataset `Egresos`: Filtrado para el tema "Egresos" y categoría "Capítulo". Se agrega porcentaje anual de cada capítulo.
+-   Dataset `Egresos_agregados`: Agregado por año, estado y categoría principal con cálculos de porcentaje anual.
+-   Dataset `Egresos_wide`: Transformado a formato ancho con valores y porcentajes por categoría principal.
+
+Consideramos los datos de finanzas públicas de los estados de México, disponibles en varios archivos CSV dentro de la carpeta "conjunto_de_datos". No se consideran los valores de la Ciudad de México.
+
+```{r}
+#| code-fold: true
+#| message: false
+#| warning: false
+
+
+# Se identifican los archivos CSV en el directorio especificado
+data_sets <- list.files("./conjunto_de_datos", pattern = "*.csv", full.names = TRUE)
+
+# Se leen y combinan los archivos CSV en un solo data frame
+datos <- data_sets |> 
+  set_names(nm = data_sets) |> 
+  map_dfr(read_csv, .id = "source_file")
+
+# Convertir variables de tipo character a factor
+datos_factor <- datos |> 
+  dplyr::select(where(is.character)) |> 
+  names()
+
+datos <- datos |> 
+  mutate(across(all_of(datos_factor), as_factor))
+
+# Crear variables adicionales
+datos <- datos |> mutate(ANIO_factor = as_factor(ANIO), VALOR_millones = VALOR / 1e6)
+datos <- datos |> rename(CVE_ENT = ID_ENTIDAD)
+
+# Cargar datos de estados y unir con el conjunto de datos principal
+datos_estado <- read_csv("tc_entidad.csv")
+datos_estado <- datos_estado |> mutate(across(everything(), as_factor))
+datos_estado$ZONA <- factor(datos_estado$ZONA, levels = c("NORTE", "CENTRO", "SUR"))
+
+datos <- left_join(datos, datos_estado)
+
+# Eliminar columnas no necesarias
+datos <- datos |> dplyr::select(-source_file, -PROD_EST, -COBERTURA, -ESTATUS) 
+
+
+#glimpse(datos)
+
+nacional_estado <- st_read("data_nacional/00ent.shp", options = "ENCODING=LATIN1", quiet = TRUE)
+nacional_estado <- left_join(nacional_estado, datos_estado, by = "CVE_ENT")
+
+
+egresos <- datos |> filter(TEMA == "Egresos", CATEGORIA == "Capítulo")
+
+# Agregar porcentaje anual al dataset original
+egresos <- egresos |> 
+  group_by(ANIO, CVE_ENT, NOM_ENT) |> 
+  mutate(
+    valor_estado_anio = sum(VALOR_millones, na.rm = TRUE),
+    porcentaje_anual = (VALOR_millones / valor_estado_anio) * 100
+  ) |> 
+  ungroup()
+
+
+niveles_categoria <- c( "Servicios personales","Materiales y suministros",
+  "Servicios generales","Transferencias, asignaciones, subsidios y otras ayudas","Bienes muebles, inmuebles e intangibles", "Inversión pública",
+  "Inversiones financieras y otras provisiones","Recursos asignados a municipios", "Deuda pública","Disponibilidad final")
+
+egresos$DESCRIPCION_CATEGORIA <- factor(egresos$DESCRIPCION_CATEGORIA, levels = niveles_categoria)
+
+# Agregar columna de categorías principales
+egresos <- egresos |> 
+  mutate(
+    CATEGORIA_PRINCIPAL = case_when(
+      
+      # Gasto Corriente
+      DESCRIPCION_CATEGORIA %in% c(
+        "Servicios personales",
+        "Materiales y suministros",
+        "Servicios generales"
+      ) ~ "Gasto Corriente",
+      
+      # Transferencias
+      DESCRIPCION_CATEGORIA %in% c(
+        "Transferencias, asignaciones, subsidios y otras ayudas",
+        "Recursos asignados a municipios"
+      ) ~ "Transferencias",
+      
+      # Inversión 
+      DESCRIPCION_CATEGORIA %in% c(
+        "Inversión pública",
+        "Bienes muebles, inmuebles e intangibles"
+      ) ~ "Inversión",
+      
+      #  Financiamiento
+      DESCRIPCION_CATEGORIA %in% c(
+        "Inversiones financieras y otras provisiones",
+        "Deuda pública"
+      ) ~ "Financiamiento",
+      
+      # Otros
+      TRUE ~ "Otros"
+    ),
+    
+    # Convertir a factor con orden específico
+    CATEGORIA_PRINCIPAL = factor(
+      CATEGORIA_PRINCIPAL,
+      levels = c("Gasto Corriente", "Transferencias", "Inversión", "Financiamiento", "Otros")
+    )
+  )
+
+
+
+# Agregar datos por ANIO, Estado y CATEGORIA_PRINCIPAL con porcentajes
+egresos_agregados <- egresos |> 
+  group_by(ANIO, CVE_ENT, NOM_ENT, ABR_ENT, ZONA, CATEGORIA_PRINCIPAL, ANIO_factor) |> 
+  summarise(
+    VALOR = sum(VALOR, na.rm = TRUE),
+    VALOR_millones = sum(VALOR_millones, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  # Calcular porcentaje por estado y año
+  group_by(ANIO, CVE_ENT, NOM_ENT) |> 
+  mutate(
+    valor_estado_anio = sum(VALOR_millones, na.rm = TRUE),
+    porcentaje_anual = (VALOR_millones / valor_estado_anio) * 100
+  ) |> 
+  ungroup() |> 
+  # Reordenar columnas para mantener estructura similar
+  dplyr::select(
+    ANIO,
+    CVE_ENT, 
+    VALOR,
+    ANIO_factor,
+    VALOR_millones,
+    porcentaje_anual,
+    NOM_ENT,
+    ABR_ENT,
+    ZONA,
+    CATEGORIA_PRINCIPAL
+  )
+
+
+# Transformar a formato ancho con valor y porcentaje por categoría
+egresos_wide <- egresos_agregados |> 
+  dplyr::select(ANIO, CVE_ENT, ANIO_factor, NOM_ENT, ABR_ENT, ZONA, 
+         CATEGORIA_PRINCIPAL, VALOR_millones, porcentaje_anual) |> 
+  pivot_wider(
+    names_from = CATEGORIA_PRINCIPAL,
+    values_from = c(VALOR_millones, porcentaje_anual),
+    names_sep = "_"
+  ) |> 
+  rename_with(
+    ~ case_when(
+      .x == "VALOR_millones_Gasto Corriente" ~ "Gasto_Corriente_valor",
+      .x == "porcentaje_anual_Gasto Corriente" ~ "Gasto_Corriente_porcentaje",
+      
+      .x == "VALOR_millones_Transferencias" ~ "Transferencias_valor",
+      .x == "porcentaje_anual_Transferencias" ~ "Transferencias_porcentaje",
+      
+      .x == "VALOR_millones_Inversión" ~ "Inversion_valor",
+      .x == "porcentaje_anual_Inversión" ~ "Inversion_porcentaje",
+      
+      .x == "VALOR_millones_Financiamiento" ~ "Financiamiento_valor",
+      .x == "porcentaje_anual_Financiamiento" ~ "Financiamiento_porcentaje",
+      
+      .x == "VALOR_millones_Otros" ~ "Otros_valor",
+      .x == "porcentaje_anual_Otros" ~ "Otros_porcentaje",
+      TRUE ~ .x
+    )
+  ) |> 
+  mutate(
+    across(contains("_valor"), ~ replace_na(.x, 0)),
+    across(contains("_porcentaje"), ~ replace_na(.x, 0))
+  ) |> 
+  dplyr::select(
+    ANIO, CVE_ENT, ANIO_factor, NOM_ENT, ABR_ENT, ZONA,
+    Gasto_Corriente_valor, Gasto_Corriente_porcentaje,
+    Transferencias_valor, Transferencias_porcentaje,
+    Inversion_valor, Inversion_porcentaje,
+    Financiamiento_valor, Financiamiento_porcentaje,
+    Otros_valor, Otros_porcentaje
+  )
+```
+
+# Mapa de Agregado de Egresos por Estado (2013-2023)
+
+```{r}
+#| code-fold: true
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 8
+#| fig-align: "center"
+
+#   Mapa de Egresos Agregados por Estado (2013–2023)
+egresos_totales_estado <- egresos_agregados |> 
+  group_by(CVE_ENT, NOM_ENT, ABR_ENT, ZONA) |> 
+  summarise(
+    egresos_totales_millones = sum(VALOR_millones, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mapa_egresos <- nacional_estado |> 
+  left_join(egresos_totales_estado, by = "CVE_ENT")
+
+ggplot(mapa_egresos) +
+  geom_sf(aes(fill = egresos_totales_millones), color = "gray40", size = 0.3) +
+  scale_fill_viridis_c(
+    option = "C",
+    name = "Egresos totales\n(millones de pesos)",
+    labels = scales::comma
+  ) +
+  labs(
+    title = "Mapa de Egresos Agregados por Estado (2013–2023)",
+    subtitle = "Suma total de egresos estatales durante el periodo 2013–2023",
+    caption = "Fuente: Elaboración propia con datos EFIPEM - INEGI"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank()
+  )
+```
+Se quita a CDMX para una mejor visualización
+
+```{r}
+#| code-fold: true
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 8
+#| fig-align: "center"
+
+#   Mapa de Egresos Agregados por Estado (2013–2023) SIN CDMX
+
+egresos_totales_estado <- egresos_agregados |> 
+  filter(ABR_ENT != "MEX") |> 
+  group_by(CVE_ENT, NOM_ENT, ABR_ENT, ZONA) |> 
+  summarise(
+    egresos_totales_millones = sum(VALOR_millones, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mapa_egresos <- nacional_estado |> 
+  filter(ABR_ENT != "MEX") |>   
+  left_join(egresos_totales_estado, by = "CVE_ENT")
+
+ggplot(mapa_egresos) +
+  geom_sf(aes(fill = egresos_totales_millones), color = "gray40", size = 0.3) +
+  scale_fill_viridis_c(
+    option = "C",
+    name = "Egresos totales\n(millones de pesos)",
+    labels = scales::comma
+  ) +
+  labs(
+    title = "Mapa de Egresos Agregados por Estado (2013–2023) sin Ciudad de México",
+    subtitle = "Suma total de egresos estatales durante el periodo 2013–2023",
+    caption = "Fuente: Elaboración propia con datos EFIPEM - INEGI"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank()
+  )
+```
+# Tendencias Temporales por Categoría Principal
+
+A continuación, se presentan las tendencias temporales de los egresos estatales desglosados por categoría principal para el periodo 2013-2023.
+
+```{r}
+#| code-fold: true
+
+# Gasto corriente
+graf_temp <- ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL == "Gasto Corriente"), 
+                    aes(x = ANIO, y = VALOR_millones, color = ABR_ENT)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = unique(egresos_agregados$ANIO)) +
+  labs(
+    title = "Tendencias Temporales de Egresos Estatales de la categoría Gasto Corriente (2013-2023)",
+    x = "Año",
+    y = "Egresos (Millones MXN)",
+    color = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+ggplotly(graf_temp)
+
+# Transferencias
+graf_temp_1 <- ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL == "Transferencias"), 
+                    aes(x = ANIO, y = VALOR_millones, color = ABR_ENT)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = unique(egresos_agregados$ANIO)) +
+  labs(
+    title = "Tendencias Temporales de Egresos Estatales de la categoría Transferencias (2013-2023)",
+    x = "Año",
+    y = "Egresos (Millones MXN)",
+    color = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+ggplotly(graf_temp_1)
+
+# Inversión
+graf_temp_2 <- ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL == "Inversión"), 
+                    aes(x = ANIO, y = VALOR_millones, color = ABR_ENT)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = unique(egresos_agregados$ANIO)) +
+  labs(
+    title = "Tendencias Temporales de Egresos Estatales de la categoría Inversión (2013-2023)",
+    x = "Año",
+    y = "Egresos (Millones MXN)",
+    color = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+ggplotly(graf_temp_2)
+
+# Financiamento
+graf_temp_3 <- ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL == "Financiamiento"), 
+                    aes(x = ANIO, y = VALOR_millones, color = ABR_ENT)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = unique(egresos_agregados$ANIO)) +
+  labs(
+    title = "Tendencias Temporales de Egresos Estatales de la categoría Financiamiento (2013-2023)",
+    x = "Año",
+    y = "Egresos (Millones MXN)",
+    color = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+ggplotly(graf_temp_3)
+
+# Otros
+graf_temp_4 <- ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL == "Otros"), 
+                    aes(x = ANIO, y = VALOR_millones, color = ABR_ENT)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = unique(egresos_agregados$ANIO)) +
+  labs(
+    title = "Tendencias Temporales de Egresos Estatales de la categoría Otros (2013-2023)",
+    x = "Año",
+    y = "Egresos (Millones MXN)",
+    color = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+ggplotly(graf_temp_4)
+```
+
+# Gasto Corriente
+
+A continuación, se presenta un análisis detallado de las Tranferencias como componente clave de los egresos estatales en México durante el periodo 2013-2023.Inicialmente se muestra por medio de diagramas de cajas la distribución en cada estado de los porcentajes anuales de esta categoría.
+
+```{r}
+#| code-fold: true
+#| fig-width: 10
+#| fig-height: 7
+#| fig-align: "center"
+
+ggplot(egresos_agregados |> filter(CATEGORIA_PRINCIPAL =="Gasto Corriente"), aes(x = reorder(ABR_ENT, porcentaje_anual, FUN = mean), y =porcentaje_anual,
+       fill = ABR_ENT)) +
+  geom_boxplot() +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(
+    title = "Distribución de Gasto Corriente como Porcentaje de Egresos Totales (2013-2023)",
+    subtitle = "Porcentaje por estado",
+    x = "Estado",
+    y = "Porcentaje (%)",
+    fill = "Estado"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "none",
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+
+```
+
+Se realiza el análisis de varianza (ANOVA) para determinar si existen diferencias significativas en la media de los porcentajes anuales para esta categoría.
+
+```{r}
+#| code-fold: true
+#| fig-width: 12
+#| fig-height: 6
+#| fig-align: "center"
+
+af_estado_aov <- aov(porcentaje_anual ~ ABR_ENT, data = egresos_agregados |> filter(CATEGORIA_PRINCIPAL =="Gasto Corriente"))
+
+```
+Se seleccionan las variables numéricas y de un año en particular, en este caso 2018.
+
+```{r}
+#| code-fold: true
+#| message: false
+#| warning: false
+
+my_year <- 2018
+
+# Filtrar datos agregados por año
+egresos_year_bar <- egresos_agregados |> 
+  filter(ANIO == my_year)
+
+egresos_year <- egresos_wide |> 
+  filter(ANIO == my_year)
+
+# Excluir CDMX (ABR_ENT == "MEX") si es necesario
+egresos_wo_MEX <- egresos_year |> 
+  filter(ABR_ENT != "MEX")
+
+# Valores absolutos (millones)
+egresos_numeric_valor <- egresos_wo_MEX |> 
+  dplyr::select(
+    Gasto_Corriente_valor,
+    Transferencias_valor,
+    Inversion_valor,
+    Financiamiento_valor,
+    Otros_valor
+  )
+
+row.names(egresos_numeric_valor) <- egresos_wo_MEX$ABR_ENT
+
+# Porcentajes
+egresos_numeric_porcentaje <- egresos_year |> 
+  dplyr::select(
+    Gasto_Corriente_porcentaje,
+    Transferencias_porcentaje,
+    Inversion_porcentaje,
+    Financiamiento_porcentaje,
+    Otros_porcentaje
+  )
+
+row.names(egresos_numeric_porcentaje) <- egresos_year$ABR_ENT
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 10
+#| fig-height: 10
+#| fig-align: "center"
+
+# Gráfica de barras apiladas con etiquetas >5%
+graf_bar <- egresos_year_bar |> 
+  mutate(
+    etiqueta = ifelse(
+      porcentaje_anual >= 5,
+      paste0(round(porcentaje_anual, 1), "%"),
+      ""
+    )
+  ) |> 
+  ggplot(aes(
+    x = ABR_ENT,
+    y = porcentaje_anual,
+    fill = CATEGORIA_PRINCIPAL
+  )) +
+  geom_col(position = "stack") +
+  geom_text(
+    aes(label = etiqueta),
+    position = position_stack(vjust = 0.5),
+    size = 4,
+    color = "white",
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(
+    title = "Composición de Egresos por Estado",
+    subtitle = "Porcentaje por categoría (solo etiquetas ≥ 5%)",
+    x = "Estado",
+    y = "Porcentaje (%)",
+    fill = "Categoría"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  ) +
+  guides(fill = guide_legend(nrow = 3, byrow = TRUE))
+
+graf_bar
+
+```
+
+
+# Distancias
+
+A continuación se muestra una representación gráfica de la matriz de distancias utilizando la métrica euclidiana para los porcentajes.
+
+```{r}
+#| code-fold: true
+#| warning: false 
+#| fig-width: 10
+#| fig-height: 10
+#| fig-align: "center" 
+
+dist.eucl <- dist(egresos_numeric_porcentaje) 
+dist.eucl_matrix <- as.matrix(dist.eucl) 
+dist.eucl_plot <- fviz_dist(dist.eucl, lab_size = 6)+ 
+theme(axis.text.x = element_text(size=15), 
+      axis.text.y = element_text(size=15)) 
+
+ggplotly(dist.eucl_plot)
+```
+# Agrupamiento jerárquico
+
+Llevamos a cabo el agrupamiento jerárquico utilizando la matriz de distancias Euclidianas. Se muestran los dendrogramas utilizando diferentes métodos de enlace.
+
+## Distancia Euclidiana
+
+::: panel-tabset
+### Completo
+
+```{r}
+#| code-fold: true
+#| warning: false
+#| fig-width: 10
+#| fig-height: 6
+
+euc_comp_hc <- hclust(dist.eucl, method = "complete")
+fviz_dend(euc_comp_hc, k=5, cex=0.9, k_colors = "jco", rect=TRUE, rect_border= "jco", rect_fill = TRUE, labels_track_height=3)
+
+```
+
+En este caso, al considerar 5 grupos, *cortamos* el árbol, identificamos cuántas observaciones hay en cada cluster y por ejemplo, mostramos los elementos del grupo 5.
+
+```{r}
+#| code-fold: true
+
+grp_euc_complete <- cutree(euc_comp_hc, k=5)
+grp_complete_df <- as.data.frame(grp_euc_complete)
+grp_complete_df <- grp_complete_df |> 
+  rownames_to_column(var = "ABR_ENT")
+table(grp_euc_complete)
+rownames(egresos_numeric_porcentaje)[grp_euc_complete == 3]
+```
+
+Utilizando la función `fviz_cluster()` podemos visualizar el resultado por medio de un scatterplot. Las observaciones son representadas en el plano usando componentes principales.
+
+```{r}
+#| code-fold: true
+
+fviz_cluster(list(data= egresos_numeric_porcentaje, cluster= grp_euc_complete),
+             palette = "jco", ellipse.type = "convex", repel = TRUE, show.clust.cent = FALSE, ggtheme = theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, grp_complete_df , by = "ABR_ENT")
+nacional_estado$grp_euc_complete <- as.factor(nacional_estado$grp_euc_complete)
+nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=grp_euc_complete), color = "gray50", size = 0.5) +
+  labs(
+    title = "Clustering, linkage complete ",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+
+### Single
+
+```{r}
+#| code-fold: true
+#| warning: false
+
+euc_single_hc <- hclust(dist.eucl, method = "single")
+fviz_dend(euc_single_hc, k=5, cex=0.5, k_colors = "jco", rect=TRUE, rect_border= "jco", rect_fill = TRUE, labels_track_height=0.1)
+```
+
+Se proyecta en el subespacio generado por las dos primeras componentes principales:
+
+```{r}
+#| code-fold: true
+
+grp_euc_single <- cutree(euc_single_hc, k=5)
+grp_single_df <- as.data.frame(grp_euc_single)
+grp_single_df <- grp_single_df |> 
+  rownames_to_column(var = "ABR_ENT")
+fviz_cluster(list(data= egresos_numeric_porcentaje, cluster= grp_euc_single),
+             palette = "jco", ellipse.type = "convex", repel = TRUE, show.clust.cent = FALSE, ggtheme = theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, grp_single_df , by = "ABR_ENT")
+nacional_estado$grp_euc_single <- as.factor(nacional_estado$grp_euc_single)
+# nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=grp_euc_single), color = "gray50", size = 0.5) +
+  labs(
+    title = "Clustering, linkage single ",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+
+### Average
+
+```{r}
+#| code-fold: true
+#| warning: false
+
+euc_ave_hc <- hclust(dist.eucl, method = "average")
+fviz_dend(euc_ave_hc, k=5, cex=0.5, k_colors = "jco", rect=TRUE, rect_border= "jco", rect_fill = TRUE, labels_track_height=0.25)
+```
+
+Se proyecta en el subespacio generado por las dos primeras componentes principales:
+
+```{r}
+#| code-fold: true
+
+grp_euc_ave <- cutree(euc_ave_hc, k=5)
+grp_ave_df <- as.data.frame(grp_euc_ave)
+grp_ave_df <- grp_ave_df |> 
+  rownames_to_column(var = "ABR_ENT")
+fviz_cluster(list(data= egresos_numeric_porcentaje, cluster= grp_euc_ave),
+             palette = "jco", ellipse.type = "convex", repel = TRUE, show.clust.cent = FALSE, ggtheme = theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, grp_ave_df , by = "ABR_ENT")
+nacional_estado$grp_euc_ave <- as.factor(nacional_estado$grp_euc_ave)
+# nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=grp_euc_ave), color = "gray50", size = 0.5) +
+  labs(
+    title = "Clustering, linkage average",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+
+### Ward.D2
+
+```{r}
+#| code-fold: true
+#| warning: false
+
+euc_ward2_hc <- hclust(dist.eucl, method = "ward.D2")
+fviz_dend(euc_ward2_hc, k=5, cex=0.5, k_colors = "jco", rect=TRUE, rect_border= "jco", rect_fill = TRUE, labels_track_height=0.25)
+```
+
+Se proyecta en el subespacio generado por las dos primeras componentes principales:
+
+```{r}
+#| code-fold: true
+
+grp_euc_ward2 <- cutree(euc_ward2_hc, k=5)
+grp_ward2_df <- as.data.frame(grp_euc_ward2)
+grp_ward2_df <- grp_ward2_df |> 
+  rownames_to_column(var = "ABR_ENT")
+fviz_cluster(list(data= egresos_numeric_porcentaje, cluster= grp_euc_ward2),
+             palette = "jco", ellipse.type = "convex", repel = TRUE, show.clust.cent = FALSE, ggtheme = theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, grp_ward2_df , by = "ABR_ENT")
+nacional_estado$grp_euc_ward2 <- as.factor(nacional_estado$grp_euc_ward2)
+# nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=grp_euc_ward2), color = "gray50", size = 0.5) +
+  labs(
+    title = "Clustering, linkage Ward",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+:::
+
+# K-means
+
+::: panel-tabset
+## K = 3
+
+```{r}
+#| code-fold: true
+
+km3 <- kmeans(egresos_numeric_porcentaje, 3, nstart = 25)
+km3_df <- as.data.frame(km3$cluster)
+km3_df <- km3_df |> 
+  rownames_to_column(var = "ABR_ENT")
+colnames(km3_df)[2] <- "km3_cluster"
+km3_df$km3_cluster <- as.factor(km3_df$km3_cluster)
+fviz_cluster(km3, data = egresos_numeric_porcentaje, palette= "jco", ellipse.type = "euclid", star.plot=TRUE, ggtheme=theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, km3_df , by = "ABR_ENT")
+
+# nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=km3_cluster), color = "gray50", size = 0.5) +
+  labs(
+    title = "K means, K=3",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+
+## K = 4
+
+```{r}
+#| code-fold: true
+
+km4 <- kmeans(egresos_numeric_porcentaje, 4, nstart = 25)
+km4_df <- as.data.frame(km4$cluster)
+km4_df <- km4_df |> 
+  rownames_to_column(var = "ABR_ENT")
+colnames(km4_df)[2] <- "km4_cluster"
+km4_df$km4_cluster <- as.factor(km4_df$km4_cluster)
+fviz_cluster(km4, data = egresos_numeric_porcentaje, palette= "jco", ellipse.type = "euclid", star.plot=TRUE, ggtheme=theme_bw())
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: "center"
+
+nacional_estado <- left_join(nacional_estado, km4_df , by = "ABR_ENT")
+
+# nacional_estado <- nacional_estado |>  mutate(grp_euc_complete = if_else(is.na(grp_euc_complete), "Otro", grp_euc_complete))
+
+mapa <- ggplot(nacional_estado) +
+  geom_sf(aes(fill=km4_cluster), color = "gray50", size = 0.5) +
+  labs(
+    title = "K means, K=4",
+    fill = "Cluster"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10)
+  )
+  
+  
+print(mapa)
+```
+:::
